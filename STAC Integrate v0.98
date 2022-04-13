@@ -1,0 +1,280 @@
+#STAC-Integrator
+#Script for filtering and integrating presence/absence alleles through dynamic processes into higher-fidelity genetic marker datasets
+#Uses the same file format as STAC
+#Two files, one with the high-fidelity anchor markers, and the other with the presence/absence alleles to be sorted
+
+#Section 1: Set Working Directory and Import Files
+setwd("E:/Tech Demo")
+#do not include file extensions on the file names, they should be formatted as .csv
+AnchorFileName<-"SNP output modified Sans90 for STAC"
+PresenceAbsenceFileName<-"Polymorphic Presence Absence BLAST Filtering at least 10 percent"
+Anchor<-read.csv(paste(AnchorFileName,".csv",sep=""),header=TRUE)
+PresenceAbsence<-read.csv(paste(PresenceAbsenceFileName,".csv",sep=""),header=TRUE)
+
+#Section 2: Set Quality Parameters
+#cM_Max is the maximum recombination distance in centimorgans between anchor markers
+#that the software will try to salvage presence/absence markers between.
+#Ex: If you set cM_Max to 3, and the flanking anchor markers for a given presence/absence marker are 4cM apart, 
+#then the script will automatically discard those presence/absence markers, because the filtering would be too unreliable
+cM_Max<-5
+MismatchPercent<-3
+#the MismatchPercent variable determines the maximum mismatches allowed between the calculated anchor-derived haplotype, and a given marker in the PresenceAbsence file.
+#This does not scale with coverage. If you have 101 genotypes, and you set it at 3, 3 mismatches will be tolerated in each marker, whether that marker has 10% coverage or 50% coverage.
+SunsetDistance<-15  
+#Overall program outline
+  #step 0: format data for all applications
+  #step 1: calculate observed local recombination frequencies - use Anchor Markers only, loop subtracting each vector from previous one. graph recombination frequencies and output PDF
+  #step 2: parallel bi-directional chromosome scans, create giant anchor-derived haplotype matrices for each chromosome, also create sunset matrices to keep track of distance that each call is pulled from
+  #step 3: compare between chromosome scans and sunset matrices which filters out data that violates our stated sunset distance threshold
+  #step 4: compare each presence/absence marker against the anchor-derived haplotype matrices and other quality parameters, output .csv of anchor markers and P/A markers that pass
+  #step 5: MAST-style graphical analysis of data that was retained
+
+#step 0
+#sort data of both files, synchronize them in terms of chromosomes
+
+#create lists, where each entry is 1 chromosome, do this for both data files
+#sort both matrices by position, and then, sort both matrices by chromosome
+#then make a vector with all the chromosome names between both files.
+#create loop for each of those chromosome names, and in that loop, subset the data from each file by those names.
+#store those two lists, and bear in mind that it's possible some entries in those lists might be empty
+
+###insert 2 order commands for each matrix here, first by position, then by CHR
+#use this once sorted, -> CHRLIST<-sort(unique(c(Anchor$CHR,PresenceAbsence$CHR)))
+
+Folder<-paste(getwd(),"/STAC Integrate Output ",gsub(":",".",Sys.time()),"/",sep="")
+CHRLIST<-sort(intersect(unique(Anchor$CHR),unique(PresenceAbsence$CHR)))
+####consider improving this by making it the intersect of the two files
+Anchorlist<-list()
+u<-1
+for(u in c(1:length(CHRLIST)))
+{
+  Anchorlist[[u]]<-Anchor[Anchor[,"CHR"]==CHRLIST[u],]
+}
+
+PAlist<-list()
+u<-1
+for(u in c(1:length(CHRLIST)))
+{
+  PAlist[[u]]<-PresenceAbsence[PresenceAbsence[,"CHR"]==CHRLIST[u],]
+}
+#step 1
+#calculate recombination - semi-crude method
+#break it down by chromosome making use of the step 0 lists. 
+#For each chromosome, for each anchor marker
+#subtract the vector of the row from the vector of the previous row. If it's the 1st row, subtract it from itself.
+#sum the resulting vector, and store that entry as a vector. 
+####to do this efficiently, create a new matrix, copied from
+#the matrix in the current chromsome from the list, 
+#duplicate the 1st row, and then have the rest of it offset by 1, and remove the last row, then subtract the original from the new
+
+###working with anchorlist only for this
+cMlist<-list()
+i<-1
+for(i in c(1:length(CHRLIST))){
+ChromosomeAnchorMatrix<-Anchorlist[[i]]
+ChromosomeAnchorMatrix<-ChromosomeAnchorMatrix[,5:ncol(ChromosomeAnchorMatrix)]
+ChromosomeShiftedMatrix<-rbind(ChromosomeAnchorMatrix[1,],ChromosomeAnchorMatrix[1:(nrow(ChromosomeAnchorMatrix)-1),])  
+calculation<- (ChromosomeAnchorMatrix - ChromosomeShiftedMatrix)
+cMlist[[i]]<-100*(abs(rowSums(calculation,na.rm=TRUE)/2)/(ncol(Anchor)-4))
+  }
+
+pdf(paste("cM Linkage Disequilibrium Plots",AnchorFileName,".pdf",sep=""))
+k<-1
+for(k in c(1:length(CHRLIST))){
+  plot1<-Anchorlist[[k]]
+  plot1<-plot1[,2]
+  barplot(cMlist[[k]],main=CHRLIST[k],ylab="cM",xlab="Markers Along Chromosome",col="red",names.arg=plot1,las=2,cex.names=(30/nrow(Anchorlist[[k]])))
+}
+dev.off()
+Anchorlist[[1]]
+
+##step 2
+###position matrices, forward and back, not the most compact solution, but straight forward.
+i<-1
+Sunlist<-list()
+for(i in c(1:length(CHRLIST)))
+{
+  #SunMatrix<-matrix(0,nrow(Anchorlist[[i]]),(ncol(Anchorlist[[i]])-4))
+  #SunMatrix<-SunMatrix+rep(cumsum(cMlist[[i]]),ncol(SunMatrix))
+#Sunlist[[i]]<-SunMatrix
+#####
+Sunlist[[i]]<-cumsum(cMlist[[i]])
+}
+##forward wave
+###here we are generating a matrix with the last known call in a given direction
+##we are in parallel generating a matrix that says how far that last call was from the current position
+##we are then replacing anything in the first matrix with NA if the value in the 2nd matrix exceeds the sunset cutoff
+####The code within 
+FrontSunsetList<-list()
+FrontWaveList<-list()
+j<-1
+for(j in c(1:length(Anchorlist)))
+{
+WaveFrame<-Anchorlist[[j]][,5:ncol(Anchorlist[[j]])]
+FrontcM<-cMlist[[j]]
+i<-1
+FrontWaveVector<-as.vector(rep(NA,ncol(WaveFrame)))
+FrontWaveMatrix<-as.numeric(matrix(ncol=ncol(WaveFrame)))
+FrontSunsetVector<-as.vector(rep(0,ncol(WaveFrame)))
+FrontSunsetMatrix<-as.numeric(matrix(ncol=ncol(WaveFrame)))
+for(i in c(1:nrow(WaveFrame)))
+{  
+  FrontCurrentVector<-WaveFrame[i,]
+  ActiveCalculation<-matrix()
+  ActiveCalculation<-rbind(FrontWaveVector,FrontCurrentVector)
+  fixes<-which(is.na(ActiveCalculation[2,]))
+  ActiveCalculation[2,fixes]<-ActiveCalculation[1,fixes]
+  FrontWaveVector<-ActiveCalculation[2,]
+  FrontWaveMatrix<-rbind(FrontWaveMatrix,FrontWaveVector)
+  
+  ##FrontSunsetVector is similar to FrongWaveVector, it stores the previous distances
+  ##FrontCurrentcM acts by taking the cM distance of the current anchor marker from the previous, and testing
+  #if the wave matrix was refreshed at that individual, or if the distance the previous call is being carried
+  #needs to be added to the totals
+  #retained is a variable that identifies what new data is retained, as in, the new data for marker calls 
+  #for this marker replaces the old data for marker calls from previous markers
+  #retained is the inverse of fixes
+  retained<-c(1:ncol(WaveFrame))
+  retained<-retained[-(fixes)]
+  FrontCurrentcM<-as.vector(rep(FrontcM[i],ncol(WaveFrame)))
+  ActiveCalculationSunset<-matrix()
+  ActiveCalculationSunset<-rbind(FrontSunsetVector,FrontCurrentcM)
+  ActiveCalculationSunset[2,retained]=0
+  ActiveCalculationSunset[1,retained]=0
+  FrontSunsetVector<-ActiveCalculationSunset[1,]+ActiveCalculationSunset[2,]
+  FrontSunsetMatrix<-rbind(FrontSunsetMatrix,FrontSunsetVector)
+}
+#saving matrices to the lists for further indexed use
+#Also, applying the SunsetDistance Filter in this step
+FrontWaveMatrix[FrontSunsetMatrix>SunsetDistance]=NA
+FrontWaveList[[j]]<-FrontWaveMatrix[2:nrow(FrontWaveMatrix),]
+FrontSunsetList[[j]]<-FrontSunsetMatrix[2:nrow(FrontSunsetMatrix),]
+}
+
+####Same thing but Reversed
+BackSunsetList<-list()
+BackWaveList<-list()
+j<-1
+for(j in c(1:length(Anchorlist)))
+{
+  WaveFrame<-Anchorlist[[j]][,5:ncol(Anchorlist[[j]])]
+  WaveFrame<-WaveFrame[c(nrow(WaveFrame):1),,drop=FALSE]
+  BackcM<-cMlist[[j]]
+  BackcM<-BackcM[c(length(BackcM):1),drop=FALSE]
+  i<-1
+  BackWaveVector<-as.vector(rep(NA,ncol(WaveFrame)))
+  BackWaveMatrix<-as.numeric(matrix(ncol=ncol(WaveFrame)))
+  BackSunsetVector<-as.vector(rep(0,ncol(WaveFrame)))
+  BackSunsetMatrix<-as.numeric(matrix(ncol=ncol(WaveFrame)))
+  for(i in c(1:nrow(WaveFrame)))
+  {  
+   ###wave calculations
+     BackCurrentVector<-WaveFrame[i,]
+    ActiveCalculation<-matrix()
+    ActiveCalculation<-rbind(BackWaveVector,BackCurrentVector)
+    fixes<-which(is.na(ActiveCalculation[2,]))
+    ActiveCalculation[2,fixes]<-ActiveCalculation[1,fixes]
+    BackWaveVector<-ActiveCalculation[2,]
+    BackWaveMatrix<-rbind(BackWaveMatrix,BackWaveVector)
+  ###sunset calculations  
+    retained<-c(1:ncol(WaveFrame))
+    retained<-retained[-(fixes)]
+    BackCurrentcM<-as.vector(rep(BackcM[i],ncol(WaveFrame)))
+    ActiveCalculationSunset<-matrix()
+    ActiveCalculationSunset<-rbind(BackSunsetVector,BackCurrentcM)
+    ActiveCalculationSunset[2,retained]=0
+    ActiveCalculationSunset[1,retained]=0
+    BackSunsetVector<-ActiveCalculationSunset[1,]+ActiveCalculationSunset[2,]
+    BackSunsetMatrix<-rbind(BackSunsetMatrix,BackSunsetVector)
+  }
+  #saving matrices to the lists for further indexed use
+  BackWaveMatrix[BackSunsetMatrix>SunsetDistance]=NA
+  BackWaveMatrix<-BackWaveMatrix[c(nrow(BackWaveMatrix):1),,drop=FALSE]
+  BackSunsetMatrix<-BackSunsetMatrix[c(nrow(BackSunsetMatrix):1),,drop=FALSE]
+  BackWaveList[[j]]<-BackWaveMatrix[1:(nrow(BackWaveMatrix)-1),]
+  BackSunsetList[[j]]<-BackSunsetMatrix[1:(nrow(BackSunsetMatrix)-1),]
+}
+######Step 3, Comparisons between the Presence/Absence Data, and the Sunset Matrices
+##here we take the cM Max and the Mismatch Percentage, and see if each successive Presence/Absence Marker or Tag, passes
+#or fails our threshold tests.
+
+DecisionVectorList<-list()
+j<-1
+for(j in c(1:length(PAlist)))
+{
+PAMatrix<-PAlist[[j]]
+AnchorComparison<-Anchorlist[[j]]
+ComparisoncM<-cMlist[[j]]
+FrontComparison<-FrontWaveList[[j]]
+BackComparison<-BackWaveList[[j]]
+DistanceVector<-Sunlist[[j]]
+DecisionVector<-vector()
+i<-1
+for(i in c(1:nrow(PAMatrix)))
+{  
+  #lowerCalc is a vector, scalar position of current PA value to be tested minus the anchor positions as a vector
+  #if tested position is 1000 bp, and the anchor vector goes 900, 990, 1100, 1200
+  #then 990 will be selected as the lower pos, which is right
+LowerCalc<-(PAMatrix[i,4]-AnchorComparison[,4])
+HigherCalc<-(-PAMatrix[i,4]+AnchorComparison[,4])
+####here, insert logic for markers before or after flanking markers to exclude them
+###in cases where it is before the first anchor marker, the maximum LowerCalc will be less than 0
+###in cases where the PA marker is after the last anchor marker, HigherCalc maximum will be less than 0
+if(max(HigherCalc)>0 && max(LowerCalc)>0){
+LowerPos<-which(LowerCalc==min(LowerCalc[LowerCalc>0]))  
+HigherPos<-which(HigherCalc==min(HigherCalc[HigherCalc>0]))
+
+#test for cM distance limit
+if(DistanceVector[HigherPos]-DistanceVector[LowerPos]<cM_Max){
+Decisions<-rbind(PAMatrix[i,5:ncol(PAMatrix)],FrontComparison[LowerPos,],BackComparison[HigherPos,])
+###this identifies which marker calls were different between the two flanking wave matrices, and removes them from comparison
+Decisions[2,which(Decisions[2,]!=Decisions[3,])]=NA
+Mismatch<-Decisions[1,]-Decisions[2,]
+if((sum(Mismatch != 0,na.rm=TRUE)/ncol(AnchorComparison))<(MismatchPercent/100))
+{DecisionVector[i]<-1}
+else{DecisionVector[i]<-0}
+}
+else{DecisionVector[i]<-0}
+}
+else{DecisionVector[i]<-0}
+}
+DecisionVectorList[[j]]<-DecisionVector
+}
+#step 4 output data
+###loop to glue the anchor data and the kept PA data together
+FinalOutput<-data.frame()
+i<-1
+for(i in c(1:length(CHRLIST))){
+PAadditions<-PAlist[[i]]
+FinalOutput<-rbind(FinalOutput,Anchorlist[[i]],PAadditions[which(DecisionVectorList[[i]]==1),])
+}
+
+FinalOutput<-FinalOutput[order(FinalOutput$position),]
+FinalOutput<-FinalOutput[order(FinalOutput$CHR),]
+write.csv(FinalOutput,file=paste(AnchorFileName,PresenceAbsenceFileName,"Final Output.csv",sep=""),row.names=FALSE)
+
+
+#####create directory within the working directory
+#step 5 - Adaptation of MAST (Markers Around Segregating Traits) graphing for this script.
+###Withing the loop, the script grafts the Anchor Markers onto the column vector of the sun matrix to 
+###pull in the Anchorlist and the PAlist, for the PA list, replace the decisionslist vector value with light blue (for acceptance) and pink (for rejection)
+###graph the anchor markers 
+i<-1
+pdf(paste("MAST Plots",AnchorFileName," ",PresenceAbsenceFileName,".pdf",sep=""))
+for(i in c(1:length(Anchorlist)))
+{
+AnchorMarkers<-Anchorlist[[i]]
+DistanceVector<-Sunlist[[i]]
+AnchorMarkers[,1]<-DistanceVector
+PresenceAbsenceMarkers<-PAlist[[i]]
+ColoringVector<-DecisionVectorList[[i]]
+ColoringVector[ColoringVector==0]="pink"
+ColoringVector[ColoringVector==1]="light blue"
+PresenceAbsenceMarkers[,1]<-ColoringVector
+plot(AnchorMarkers[,4],AnchorMarkers[,1],main=CHRLIST[[i]],xlab="Basepair Positions along Chromosome",ylab="Calculated Crude cM Distance along Chromosome")
+abline(v=PresenceAbsenceMarkers[,4],col=PresenceAbsenceMarkers[,1])
+par(new=T)
+plot(AnchorMarkers[,4],AnchorMarkers[,1],main=CHRLIST[[i]],xlab="Basepair Positions along Chromosome",ylab="Calculated Crude cM Distance along Chromosome")
+}
+dev.off()
+
