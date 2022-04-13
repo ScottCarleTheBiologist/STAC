@@ -1,5 +1,5 @@
 #STAC [Sparse Tag Allele Caller]
-#Draft 1
+#Version 1.01
 #Created by Scott Carle
 #Purpose: to combine data across multiple tags/markers where there are high degrees of missing data
 ##in order to ascertain the state of a certain allele within a biparental population
@@ -13,10 +13,10 @@
 
 
 #set working directory
-setwd("E:/GLU_B1_project")
+setwd("E:/Tech Demo")
 #set file names within working directory, they should be .csv files, but don't include the file extension in the name
 ##for formatting instructions and examples, see the user manual
-PopulationData<-"SNP output modified Sans90 for STACPolymorphic Presence Absence BLAST Filtering at least 10 percentFinal Output modify"
+PopulationData<-"reordered SNP output modified Sans90 for STACPolymorphic Presence Absence BLAST Filtering at least 10 percentFinal Output modify"
 #####input of key variables
 #Locus Chromosome should be the name of the chromsome that each tag BLASTed to
 #start and end position are the physical positions that you want to be the min and max for 
@@ -29,7 +29,7 @@ CutoffThreshold<-.66       #this variable is the portion of calls that must be t
 
 ########end of key input variables
 #optional variables, can be changed from defaults
-AnalysisName<-"STAC Integrated consensus filter GluB1 test 9"
+AnalysisName<-"STAC analysis for GluB1"
 
 ########Reading In Files
 
@@ -136,10 +136,9 @@ for(k in c(1:numberofplots))
 {
   plotQ<-plotlist[[k]]
   colorQ<-colorlist[[k]]
-  ###I know this is slightly sloppy, I changed the way things work and need to get the lines plotted at the end correctly
+  ###the offsetvector commands that follow are for proper alignment
   offsetvector<-c(1:ncol(plotQ))
   offsetvector<-((offsetvector*5)-5)
-  #end sloppiness
   i<-1
   for(i in c(1:ncol(plotQ)))
   {
@@ -147,7 +146,7 @@ for(k in c(1:numberofplots))
     vector2<-c(1:numberofmarkers)
     colorvector<-colorQ[,i]
     #plot(c(1:numberofmarkers),vector1,type="o",xlim=c(0,numberofmarkers+1),ylim=c(-1,(ncol(plotQ)*5)),main="Quality Control Plot j",xlab="markers",ylab="genotypes",col=colorQ[,i])
-    plot(vector2[!is.na(vector1)],vector1[!is.na(vector1)],type="o",xlim=c(0,numberofmarkers+1),ylim=c(-1,(ncol(plotQ)*5)),col=colorvector[!is.na(vector1)],main="Quality Control Plot j",xlab="markers",ylab="genotypes",xaxt="n",yaxt="n",pch=16)
+    plot(vector2[!is.na(vector1)],vector1[!is.na(vector1)],type="o",xlim=c(0,numberofmarkers+1),ylim=c(-1,(ncol(plotQ)*5)),col=colorvector[!is.na(vector1)],main="Quality Control Plot j",xlab="markers",ylab="genotypes",xaxt="n",yaxt="n",pch=16,lwd=2)
     
     abline(h=(offsetvector[i]-.2),col="red")
     abline(h=(offsetvector[i]+2.2),col="darkblue")
@@ -225,4 +224,3 @@ decisionstable<-cbind(genotypes,decisionstable,FinalCall)
 #DeterminationCall<-cbind(call,ValidCalls)
 write.csv(decisionstable,file=paste(AnalysisName,"Calls.csv",sep=""),row.names=FALSE,quote=FALSE)
 #####
-
